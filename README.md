@@ -29,7 +29,6 @@ For displays the help message, use the following command:
 python main.py -h
 ```
 ## Data
-Please see the [README](./data/README.md) for detailed explanation.
 This study aims to predict CPIs for Alzheimer’s disease. To achieve this, we integrate six widely utilized public databases, including CTD, UniProt, PubChem, SIDER, DrugBank and ChemSpider, along with four commonly employed DTI datasets (namely Luo’s dataset, Hetionet, Yamanishi_08, and BioKG) to acquire information concerning compounds, drug side effects, and proteins relevant to Alzheimer’s disease.
 
 Here are the data explanation of files under `./data` folder.
