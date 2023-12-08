@@ -4,27 +4,36 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-import numpy as np
-import torch
-
-from torch.utils.data import Dataset
-from torch.utils.data import DataLoader
-
 import os
-import logging
-
-from torch_geometric.data import Data
-
+import torch
+import numpy as np
+import pandas as pd
 from utils.utils import *
+from torch.utils.data import Dataset
+from torch_geometric.data import Data
+from torch.utils.data import DataLoader
+from sklearn.model_selection import train_test_split
 
 def get_train_and_test_cpi(args):
+    """
+    Prepare training, validation, and test sets for Compound-Protein Interaction (CPI) data.
 
+    Args:
+        args: Arguments containing information about the data and the experiment.
+
+    Returns:
+        CPI_train (numpy.ndarray): Training CPI matrix with compound and protein interactions (shape: 8360 x 1975).
+        CPI_train_mask (numpy.ndarray): Binary mask indicating the presence of interactions in the training data (shape: 8360 x 1975).
+        valid_cpi (numpy.ndarray): Validation set of CPI interactions (shape: variable x 3).
+                                    Each row represents a CPI with columns: [compound_idx, protein_idx, interaction].
+        test_cpi (numpy.ndarray): Test set of CPI interactions (shape: variable x 3).
+                                   Each row represents a CPI with columns: [compound_idx, protein_idx, interaction].
+    """
+    # Load CPI data from CSV file
     cpi_list = pd.read_csv(os.path.join(args.data_path,'CPI_with_negative_sample.csv')).to_numpy()
     n = len(cpi_list)
-    # if args.do_predict:
-    #     train_cpi = cpi_list
-    #     valid_cpi = cpi_list[int(len(cpi_list)*0.99):]
-    #     test_cpi = np.array([])
+    
+    # Split data into train, validation, and test sets
     if args.do_predict:
         train_cpi,valid_cpi = train_test_split(cpi_list,train_size=0.99,shuffle=False)
         test_cpi = np.array([])
@@ -35,6 +44,7 @@ def get_train_and_test_cpi(args):
         test_cpi = cpi_list[test_start_idx:test_end_idx,]
         train_cpi,valid_cpi = train_test_split(train_cpi,train_size=0.99,shuffle=False)
 
+    # Extract indices, values, and create matrices for training data
     compound_idx = train_cpi[:,0]
     protein_idx = train_cpi[:,1]
     values = train_cpi[:,2]
@@ -43,71 +53,101 @@ def get_train_and_test_cpi(args):
     CPI_train_mask = np.zeros((args.n_compound,args.n_protein))
     CPI_train_mask[compound_idx,protein_idx] = 1
 
-    logging.info(f"train_triples:{len(train_cpi)}")
-    logging.info(f"valid_triples:{len(valid_cpi)}")
-    logging.info(f"test_triples:{len(test_cpi)}")
-    return CPI_train,CPI_train_mask,valid_cpi, test_cpi
+    return CPI_train, CPI_train_mask, valid_cpi, test_cpi
 
 def load_kge_data(args):
+    """
+    Load Knowledge Graph Embedding (KGE) data and create dataloaders for training.
+
+    Args:
+        args: Arguments containing information about the data and the experiment.
+
+    Returns:
+        train_iterator: BidirectionalOneShotIterator for training KGE.
+        nentity (int): Number of entities in the dataset.
+        nrelation (int): Number of relations in the dataset.
+    """
+    # Load entity-to-id mapping
     with open(os.path.join(args.data_path, 'entities.dict')) as fin:
         entity2id = dict()
         for line in fin:
             eid, entity = line.strip().split('\t')
             entity2id[entity] = int(eid)
 
+    # Load relation-to-id mapping
     with open(os.path.join(args.data_path, 'relations.dict')) as fin:
         relation2id = dict()
         for line in fin:
             rid, relation = line.strip().split('\t')
             relation2id[relation] = int(rid)
-    
+
+    # Get the number of entities and relations
     nentity = len(entity2id)
     nrelation = len(relation2id)
 
-    CPI_train,_, _, _ = get_train_and_test_cpi(args)
+    # Load Compound-Protein Interaction (CPI) data
+    CPI_train,_,_,_ = get_train_and_test_cpi(args)
 
+    # Load additional knowledge graph data
     CCS = np.load(os.path.join(args.data_path,'CCS.npy'))
     PPS = np.load(os.path.join(args.data_path,'PPS.npy'))
     se = np.load(os.path.join(args.data_path,'compound_se.npy'))
 
+    # Convert matrices to triples
     cpi_train_triples = adjacency_matrix_to_triples(CPI_train,relation2id['CPI'],col_offset=args.n_compound)
     ccs_triples = adjacency_matrix_to_triples(CCS,relation2id['CCS'],args.ccs_threshold)
     pps_triples = adjacency_matrix_to_triples(PPS,relation2id['PPS'],args.pps_threshold,args.n_compound,args.n_compound)
     se_triples = adjacency_matrix_to_triples(se,relation2id['side_effect'],col_offset=args.n_compound+args.n_protein)
-
+    
+    # Combine all training triples
     train_triples = np.concatenate([ccs_triples, pps_triples, se_triples, cpi_train_triples])
 
-    logging.info('#train: %d' % len(train_triples))
-
+    # Create dataloaders for training
     train_dataloader_head = DataLoader(
-        TrainDataset(train_triples, nentity, nrelation, args.kg_negative_sample_size, 'head-batch'), 
+        KGETrainDataset(train_triples, nentity, nrelation, args.kg_negative_sample_size, 'head-batch'), 
         batch_size=args.kg_batch_size,
         shuffle=True, 
-        collate_fn=TrainDataset.collate_fn
+        collate_fn=KGETrainDataset.collate_fn
     )
     
     train_dataloader_tail = DataLoader(
-        TrainDataset(train_triples, nentity, nrelation, args.kg_negative_sample_size, 'tail-batch'), 
+        KGETrainDataset(train_triples, nentity, nrelation, args.kg_negative_sample_size, 'tail-batch'), 
         batch_size=args.kg_batch_size,
         shuffle=True, 
-        collate_fn=TrainDataset.collate_fn
+        collate_fn=KGETrainDataset.collate_fn
     )
-    
+
+    # Create BidirectionalOneShotIterator for training
     train_iterator = BidirectionalOneShotIterator(train_dataloader_head, train_dataloader_tail)
     return train_iterator, nentity, nrelation
 
 
 def load_graph_data(args):
+    """
+    Load graph data for Predictive Network Alignment with Implicit Multi-channel (PNA-IMC) model.
+
+    Args:
+        args: Arguments containing information about the data and the experiment.
+
+    Returns:
+        graph_data (torch_geometric.data.Data): Graph data for PNA-IMC model.
+        CPI_train (numpy.ndarray): Training CPI matrix with compound and protein interactions (shape: 8360 x 1975).
+        CPI_train_mask (numpy.ndarray): Binary mask indicating the presence of interactions in the training data (shape: 8360 x 1975).
+    """
+    # Load additional knowledge graph data
     CCS = np.load(os.path.join(args.data_path,'CCS.npy'))
     PPS = np.load(os.path.join(args.data_path,'PPS.npy'))
 
+    # Load Compound-Protein Interaction (CPI) data
     CPI_train,CPI_train_mask, _, _ = get_train_and_test_cpi(args)
 
+    # Convert matrices to edge indices and edge weights
     ccs_edge_index, ccs_edge_weight = adjacency_matrix_to_edge_index_and_weight(CCS,args.pna_ccs_threshold)
     pps_edge_index, pps_edge_weight = adjacency_matrix_to_edge_index_and_weight(PPS,args.pna_pps_threshold,args.n_compound,args.n_compound)
     cpi_edge_index,cpi_edge_weight = adjacency_matrix_to_edge_index_and_weight(CPI_train,col_offset=args.n_compound)
     pci_edge_index,pci_edge_weight = adjacency_matrix_to_edge_index_and_weight(CPI_train.T,row_offset=args.n_compound)
 
+    # Create a PyTorch Geometric Data object
     graph_data = Data(num_nodes=args.n_compound+args.n_protein)
 
     graph_data.edge_index = torch.tensor(np.concatenate([ccs_edge_index,pps_edge_index,cpi_edge_index,pci_edge_index],axis=1)).long()
@@ -117,7 +157,7 @@ def load_graph_data(args):
 
     return graph_data,CPI_train,CPI_train_mask
 
-class TrainDataset(Dataset):
+class KGETrainDataset(Dataset):
     def __init__(self, triples, nentity, nrelation, negative_sample_size, mode):
         self.len = len(triples)
         self.triples = triples

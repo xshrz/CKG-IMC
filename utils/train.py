@@ -1,7 +1,7 @@
-# def trainmodel(model,args):
-import torch.nn.functional as F
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+
 def train_kge_step(model, optimizer, train_iterator, args):
     '''
     A single train step. Apply back-propation and return the loss
@@ -65,38 +65,13 @@ def train_kge_step(model, optimizer, train_iterator, args):
 
     return log
 
-def train_sparse_autoencoder(model, dataloader, num_epochs, learning_rate,l1_penalty, weight_decay):
-    criterion = nn.MSELoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate,weight_decay=weight_decay)
-
-    for epoch in range(num_epochs):
-        total_loss = 0.0
-        # total_l1_loss = 0.0
-        for data in dataloader:
-            inputs = data
-            optimizer.zero_grad()
-
-            outputs = model(inputs)
-            loss = criterion(outputs, inputs)
-
-            # l1 regularization to encourage sparsity
-            # l1_loss = l1_penalty * torch.sum(torch.square(outputs))
-            # l1_loss = l1_penalty * torch.sum(torch.abs(outputs))
-            l1_loss = l1_penalty * torch.norm(model.encoder.weight,p=1)
-            loss +=  l1_loss
-            # l1_loss = l1_penalty * F.mse_loss(outputs,torch.zeros_like(outputs))
-
-            loss.backward()
-            optimizer.step()
-            # total_l1_loss += l1_loss.item()
-            total_loss += loss.item()
-
-        print(f"Epoch {epoch + 1}/{num_epochs}, Loss: {total_loss / len(dataloader)}")
-
-    print("Training completed!")
 def train_pna_imc_model_step(model,optimizer):
+    '''
+    A single train step. Apply back-propation and return the loss
+    '''
     model.train()
     optimizer.zero_grad()
     loss, CPI_reconstruct = model()
     loss.backward()
     optimizer.step()
+    return loss
