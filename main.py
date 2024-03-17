@@ -33,7 +33,6 @@ def parse_args(args=None):
 
     parser.add_argument('--device', default='cuda:0', type=str, help='Device for training (default: cuda:0)')
     
-    parser.add_argument('--do_predict', action='store_true', help='Perform prediction instead of training')
     parser.add_argument('--data_path', type=str, default='./data', help='Path to the data directory (default: ./data)')
     parser.add_argument('--save_path', default='./experiments/train', type=str, help='Path to save experiment results (default: ./experiments/train)')
     parser.add_argument('-init', '--init_checkpoint', action='store_true', help='Initialize from a pre-trained checkpoint')
@@ -44,6 +43,7 @@ def parse_args(args=None):
     parser.add_argument('--pna_ccs_threshold', default=0.64, type=float, help='Threshold for CCS in PNA-IMC (default: 0.64)')
     parser.add_argument('--pna_pps_threshold', default=0.45, type=float, help='Threshold for PPS in PNA-IMC (default: 0.45)')
 
+    parser.add_argument('--kg_model_name', default='ComplEx', type=str, help='Knowledge graph embedding model to use. Options: ComplEx, DistMult, TransD, TransH, TransR, TransE, HolE, RotatE. Default: ComplEx.')
     parser.add_argument('--kg_learning_rate', default=0.001, type=float, help='Learning rate for KG training (default: 0.001)')
     parser.add_argument('--kg_negative_sample_size', default=10, type=int, help='Number of negative samples for KG training (default: 10)')
     parser.add_argument('--kg_hidden_dim', default=1024, type=int, help='Hidden dimension for KG model (default: 1024)')
@@ -99,7 +99,7 @@ def main(fold,args):
     else:
         logging.info(f'Training KGE Model')
         # load data for KGE Model 
-        kge_train_iterator, nentity, nrelation = load_kge_data(args)
+        kge_train_iterator, kge_valid_dataloader, kge_test_dataloader, nentity, nrelation = load_kge_data(args)
         
         # Set kge training configuration
         current_learning_rate = args.kg_learning_rate
@@ -109,7 +109,8 @@ def main(fold,args):
             nentity=nentity,
             nrelation=nrelation,
             hidden_dim=args.kg_hidden_dim,
-            gamma=args.gamma
+            gamma=args.gamma,
+            kg_model_name=args.kg_model_name
         ).to(args.device)
         
         kg_optimizer = torch.optim.Adam(
@@ -138,9 +139,9 @@ def main(fold,args):
 
             # Valid model
             if step>=args.kg_warm_up_steps and step % args.kg_valid_steps == 0:
-                result = evaluate_kge_model(kge_model,valid_triples,args.fold,step,args)
-                if result['aupr'] > best_aupr:
-                    wait, best_step, best_aupr  = 0, step, result['aupr']
+                result = evaluate_kge_model(kge_model,kge_valid_dataloader,args.fold,step,args)
+                if result['AUPR'] > best_aupr:
+                    wait, best_step, best_aupr  = 0, step, result['AUPR']
                     save_embedding(kge_model,embedding_save_path)
                 else:
                     wait+=1
@@ -177,8 +178,8 @@ def main(fold,args):
         if epoch >= args.pna_imc_warm_up_epochs and epoch % args.pna_imc_valid_epochs == 0:
             logging.info("Valid model")
             valid_result = evaluate_pna_imc_model(model,valid_triples,args.fold,epoch)
-            if valid_result['aupr']>best_aupr:
-                best_aupr = valid_result['aupr']
+            if valid_result['AUPR']>best_aupr:
+                best_aupr = valid_result['AUPR']
                 torch.save({'model': model.state_dict(),'epoch': epoch}, model_save_path)
                 wait = 0
             else:
@@ -194,12 +195,6 @@ def main(fold,args):
     state_dict = torch.load(model_save_path)
     model.load_state_dict(state_dict['model'])
 
-    # Do predict
-    if args.do_predict:
-        predict_top_50_cpi(model,args.data_path,args.save_path,args.n_compound)
-        predict_compounds_targeting_tau_Abeta42(model,args.data_path,args.save_path,args.n_compound)
-        return 
-    
     # Test model
     result = evaluate_pna_imc_model(model,test_triples,args.fold,state_dict['epoch'])
     save_metrics(result,args)
@@ -211,9 +206,6 @@ if __name__ == '__main__':
     args = parse_args()
     set_logger(args)
 
-    if args.do_predict:
-        main(fold=999,args=args)
-        exit()
     
     for fold in range(10):
         main(fold,args)

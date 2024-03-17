@@ -38,6 +38,8 @@ def save_config(args):
         None
     """
     argparse_dict = vars(args)
+    if not os.path.exists(args.save_path):
+        os.makedirs(args.save_path)
     with open(os.path.join(args.save_path,'config.json'), 'w') as fjson:
         json.dump(argparse_dict, fjson)
 
@@ -183,67 +185,3 @@ def set_logger(args):
     console.setFormatter(formatter)
     logging.getLogger('').addHandler(console)
 
-@torch.no_grad()
-def predict_top_50_cpi(model,data_path,save_path,n_compound):
-    """
-    Predict the top 50 compound-protein interactions (CPIs) using the given model.
-
-    Args:
-        model: The trained model for predicting CPIs.
-        data_path (str): Path to the data directory.
-        save_path (str): Path to save the prediction results.
-        n_compound (int): Number of compounds in the dataset.
-
-    Returns:
-        None
-    """
-
-    model.eval()
-    _, CPI_reconstruct = model()
-    CPI_reconstruct = CPI_reconstruct.detach().cpu().numpy()
-    rows, cols = np.where(CPI_reconstruct > 0.5)
-    scores = CPI_reconstruct[rows, cols]
-    cpi_list = [[row, col, score] for row, col, score in zip(rows, cols, scores)]
-    cpi_list.sort(key=lambda x: x[2], reverse=True)
-    top_50_cpi = np.array(cpi_list[:50])
-    entity_dict = np.loadtxt(os.path.join(data_path,'entities.dict'),delimiter='\t',dtype=str)[:,1]
-    compound = entity_dict[top_50_cpi[:,0].astype(np.int32)]
-    protein = entity_dict[top_50_cpi[:,1].astype(np.int32)+n_compound]
-    top_50_cpi = np.stack([compound,protein,top_50_cpi[:,2]],axis=1)
-    logging.info("Top 50 possible CPIs")
-    logging.info(top_50_cpi)
-    np.savetxt(os.path.join(save_path,'top_50_cpi.txt'),top_50_cpi,'%s')
-    
-@torch.no_grad()
-def predict_compounds_targeting_tau_Abeta42(model,data_path,save_path,n_compound):
-    """
-    Predict compounds targeting Abeta42 and tau and save the results.
-
-    Args:
-        model: The trained model for predicting CPIs.
-        data_path (str): Path to the data directory.
-        save_path (str): Path to save the prediction results.
-        n_compound (int): Number of compounds in the dataset.
-
-    Returns:
-        None
-    """
-        
-    model.eval()
-    _, CPI_reconstruct = model()
-    CPI_reconstruct = CPI_reconstruct.detach().cpu().numpy()
-    name_list = list(np.loadtxt(os.path.join(data_path,'entities.dict'),dtype=str)[:,1])
-    Abeta42_idx = name_list.index('P05067') - n_compound
-    TAU_idx = name_list.index('P10636') - n_compound
-    Abeta42_compound_score_list = [[name_list[compound_idx],1-(1-score)**2] for compound_idx,score in enumerate(CPI_reconstruct[:,Abeta42_idx])]
-    Abeta42_compound_score_list = sorted(Abeta42_compound_score_list,key=lambda x:x[1],reverse=True)
-    np.savetxt(os.path.join(save_path,'Abeta42_compound_score.csv'),Abeta42_compound_score_list,'%s,%s')
-    TAU_compound_score_list = [[name_list[compound_idx],1-(1-score)**2] for compound_idx,score in enumerate(CPI_reconstruct[:,TAU_idx])]
-    TAU_compound_score_list = sorted(TAU_compound_score_list,key=lambda x:x[1],reverse=True)
-    np.savetxt(os.path.join(save_path,'TAU_compound_score.csv'),TAU_compound_score_list,'%s,%s')
-    np.save(os.path.join(save_path,'CPI_reconstruct.npy'),CPI_reconstruct)
-    logging.info('Top 10 possible compounds targeting at Abeta42')
-    logging.info(np.array(Abeta42_compound_score_list[:10]))
-    logging.info('Top 10 possible compounds targeting at tau')
-    logging.info(np.array(TAU_compound_score_list[:10]))
-    logging.info("Prediction results saved at %s"%save_path)

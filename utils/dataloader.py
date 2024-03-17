@@ -34,16 +34,13 @@ def get_train_and_test_cpi(args):
     n = len(cpi_list)
     
     # Split data into train, validation, and test sets
-    if args.do_predict:
-        train_cpi,valid_cpi = train_test_split(cpi_list,train_size=0.99,shuffle=False)
-        test_cpi = np.array([])
-    else:
-        test_start_idx = args.fold * n//10
-        test_end_idx = (args.fold+1) * n//10
-        train_cpi = np.concatenate((cpi_list[0:test_start_idx,],cpi_list[test_end_idx:,]))
-        test_cpi = cpi_list[test_start_idx:test_end_idx,]
-        train_cpi,valid_cpi = train_test_split(train_cpi,train_size=0.99,shuffle=False)
 
+    test_start_idx = args.fold * n//10
+    test_end_idx = (args.fold+1) * n//10
+    train_cpi = np.concatenate((cpi_list[0:test_start_idx,],cpi_list[test_end_idx:,]))
+    test_cpi = cpi_list[test_start_idx:test_end_idx,]
+    train_cpi,valid_cpi = train_test_split(train_cpi,train_size=0.99,shuffle=False)
+ 
     # Extract indices, values, and create matrices for training data
     compound_idx = train_cpi[:,0]
     protein_idx = train_cpi[:,1]
@@ -86,7 +83,7 @@ def load_kge_data(args):
     nrelation = len(relation2id)
 
     # Load Compound-Protein Interaction (CPI) data
-    CPI_train,_,_,_ = get_train_and_test_cpi(args)
+    CPI_train, _, valid_cpi, test_cpi = get_train_and_test_cpi(args)
 
     # Load additional knowledge graph data
     CCS = np.load(os.path.join(args.data_path,'CCS.npy'))
@@ -117,9 +114,22 @@ def load_kge_data(args):
         collate_fn=KGETrainDataset.collate_fn
     )
 
+    valid_dataloader = DataLoader(
+        KGETestDataset(valid_cpi,relation2id['CPI'],args.n_compound),
+        batch_size=args.kg_batch_size,
+        shuffle=False, 
+        collate_fn=KGETestDataset.collate_fn
+    )
+    # test_dataloader = DataLoader(
+    #     KGETestDataset(test_cpi,relation2id['CPI'],args.n_compound),
+    #     batch_size=args.kg_batch_size,
+    #     shuffle=False, 
+    #     collate_fn=KGETestDataset.collate_fn
+    # )
+    test_dataloader = None
     # Create BidirectionalOneShotIterator for training
     train_iterator = BidirectionalOneShotIterator(train_dataloader_head, train_dataloader_tail)
-    return train_iterator, nentity, nrelation
+    return train_iterator, valid_dataloader, test_dataloader, nentity, nrelation
 
 
 def load_graph_data(args):
@@ -264,6 +274,27 @@ class KGETrainDataset(Dataset):
 
         return true_head, true_tail
 
+
+class KGETestDataset(Dataset):
+    def __init__(self, cpis, relation_idx, offset):
+        self.len = len(cpis)
+        cpis = torch.LongTensor(cpis)
+        head = cpis[:,0]
+        tail = cpis[:,1] + offset
+        self.label = cpis[:,2]
+        relation = torch.LongTensor([relation_idx]*len(cpis))
+        self.data = torch.stack([head,relation,tail]).T
+    def __len__(self):
+        return self.len
+    
+    def __getitem__(self, idx):
+        return self.data[idx], self.label[idx]
+    
+    @staticmethod
+    def collate_fn(data):
+        sample = torch.stack([_[0] for _ in data], dim=0)
+        label = torch.stack([_[1] for _ in data], dim=0)
+        return sample, label
    
 class BidirectionalOneShotIterator(object):
     def __init__(self, dataloader_head, dataloader_tail):

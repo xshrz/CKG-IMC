@@ -12,16 +12,37 @@ import torch.nn.functional as F
 
 from torch_geometric.nn import PNAConv
 
-
+# https://github.com/DeepGraphLearning/KnowledgeGraphEmbedding
+# https://github.com/thunlp/OpenKE
 class KGEModel(nn.Module):
-    def __init__(self, nentity, nrelation, hidden_dim, gamma):
+    def __init__(self, nentity, nrelation, hidden_dim, gamma, kg_model_name='ComplEx'):
         super(KGEModel, self).__init__()
         # self.model_name = model_name
         self.nentity = nentity
         self.nrelation = nrelation
         self.hidden_dim = hidden_dim
         self.epsilon = 2.0
-        
+        if kg_model_name == 'ComplEx':
+            self.score_function = self.ComplEx
+        elif kg_model_name == 'DistMult':
+            self.score_function = self.DistMult
+        elif kg_model_name == 'TransD':
+            self.score_function = self.TransD
+        elif kg_model_name == 'TransH':
+            self.score_function = self.TransH
+        elif kg_model_name == 'TransR':
+            self.score_function = self.TransR
+        elif kg_model_name == 'TransE':
+            self.score_function = self.TransE
+        elif kg_model_name == 'HolE':
+            self.score_function = self.HolE
+        elif kg_model_name == 'RotatE':
+            self.score_function = self.RotatE
+        else:
+            supported_models = ['ComplEx', 'DistMult', 'TransD', 'TransH', 'TransR', 'TransE', 'HolE', 'RotatE']
+            raise ValueError(f'Invalid kg_model_name: {kg_model_name}. Supported models are: {", ".join(supported_models)}')
+
+            
         self.gamma = nn.Parameter(
             torch.Tensor([gamma]), 
             requires_grad=False
@@ -48,7 +69,28 @@ class KGEModel(nn.Module):
             a=-self.embedding_range.item(), 
             b=self.embedding_range.item()
         )
+        name = self.score_function.__name__ 
 
+        if self.score_function.__name__ == 'TransR':
+            self.transfer_matrix = nn.Embedding(nrelation, self.entity_dim * self.relation_dim)
+            nn.init.xavier_uniform_(self.transfer_matrix.weight.data)
+        if self.score_function.__name__ == 'TransH':
+            self.norm_vector = nn.Embedding(nrelation, self.relation_dim)
+            nn.init.xavier_uniform_(self.norm_vector.weight.data)
+        if self.score_function.__name__ == 'TransD':
+            self.ent_transfer = nn.Embedding(self.nentity, self.entity_dim)
+            self.rel_transfer = nn.Embedding(self.nrelation, self.relation_dim)
+            nn.init.uniform_(
+                tensor = self.ent_transfer.weight.data, 
+                a= -self.embedding_range.item(), 
+                b= self.embedding_range.item()
+            )
+            nn.init.uniform_(
+                tensor = self.rel_transfer.weight.data, 
+                a= -self.embedding_range.item(), 
+                b= self.embedding_range.item()
+            )
+        logging.info(f'{self.score_function.__name__}')
         logging.info('KGEModel Parameter Configuration:')
         for name, param in self.named_parameters():
             logging.info('Parameter %s: %s, require_grad = %s' % (name, str(param.size()), str(param.requires_grad)))
@@ -85,6 +127,15 @@ class KGEModel(nn.Module):
                 index=sample[:,2]
             ).unsqueeze(1)
             
+            if self.score_function.__name__ == 'TransR':
+                self.r_transfer = self.transfer_matrix(sample[:,1])
+            if self.score_function.__name__ == 'TransH':
+                self.relation_norm = self.norm_vector(sample[:,1]).unsqueeze(1)
+            if self.score_function.__name__ == 'TransD':
+                self.h_transfer = self.ent_transfer(sample[:,0]).unsqueeze(1)
+                self.r_transfer = self.ent_transfer(sample[:,1]).unsqueeze(1)
+                self.t_transfer = self.ent_transfer(sample[:,2]).view(batch_size, negative_sample_size, -1)
+
         elif mode == 'head-batch':
             tail_part, head_part = sample
             batch_size, negative_sample_size = head_part.size(0), head_part.size(1)
@@ -107,6 +158,14 @@ class KGEModel(nn.Module):
                 index=tail_part[:, 2]
             ).unsqueeze(1)
             
+            if self.score_function.__name__ == 'TransR':
+                self.r_transfer = self.transfer_matrix(tail_part[:,1])
+            if self.score_function.__name__ == 'TransH':
+                self.relation_norm = self.norm_vector(tail_part[:,1]).unsqueeze(1)
+            if self.score_function.__name__ == 'TransD':
+                self.h_transfer = self.ent_transfer(head_part.view(-1)).view(batch_size, negative_sample_size, -1)
+                self.r_transfer = self.ent_transfer(tail_part[:, 1]).unsqueeze(1)
+                self.t_transfer = self.ent_transfer(tail_part[:, 2]).unsqueeze(1)
         elif mode == 'tail-batch':
             head_part, tail_part = sample
             batch_size, negative_sample_size = tail_part.size(0), tail_part.size(1)
@@ -129,10 +188,18 @@ class KGEModel(nn.Module):
                 index=tail_part.view(-1)
             ).view(batch_size, negative_sample_size, -1)
             
+            if self.score_function.__name__ == 'TransR':
+                self.r_transfer = self.transfer_matrix(head_part[:,1])
+            if self.score_function.__name__ == 'TransH':
+                self.relation_norm = self.norm_vector(head_part[:,1]).unsqueeze(1)
+            if self.score_function.__name__ == 'TransD':
+                self.h_transfer = self.ent_transfer(head_part[:,0]).unsqueeze(1)
+                self.r_transfer = self.ent_transfer(head_part[:,1]).unsqueeze(1)
+                self.t_transfer = self.ent_transfer(tail_part.view(-1)).view(batch_size, negative_sample_size, -1)
         else:
             raise ValueError('mode %s not supported' % mode)
         
-        score = self.ComplEx(head, relation, tail, mode)
+        score = self.score_function(head, relation, tail, mode)
         
         return score
 
@@ -154,7 +221,178 @@ class KGEModel(nn.Module):
         score = score.sum(dim = 2)
         return score
     
+    def DistMult(self, head, relation, tail, mode):
+        if mode == 'head-batch':
+            score = head * (relation * tail)
+        else:
+            score = (head * relation) * tail
 
+        score = score.sum(dim = 2)
+        return score
+
+    def RotatE(self, head, relation, tail, mode):
+        pi = 3.14159265358979323846
+        
+        re_head, im_head = torch.chunk(head, 2, dim=2)
+        relation = torch.chunk(relation, 2, dim=2)[0]
+        re_tail, im_tail = torch.chunk(tail, 2, dim=2)
+
+        #Make phases of relations uniformly distributed in [-pi, pi]
+
+        phase_relation = relation/(self.embedding_range.item()/pi)
+
+        re_relation = torch.cos(phase_relation)
+        im_relation = torch.sin(phase_relation)
+
+        if mode == 'head-batch':
+            re_score = re_relation * re_tail + im_relation * im_tail
+            im_score = re_relation * im_tail - im_relation * re_tail
+            re_score = re_score - re_head
+            im_score = im_score - im_head
+        else:
+            re_score = re_head * re_relation - im_head * im_relation
+            im_score = re_head * im_relation + im_head * re_relation
+            re_score = re_score - re_tail
+            im_score = im_score - im_tail
+
+        score = torch.stack([re_score, im_score], dim = 0)
+        score = score.norm(dim = 0)
+
+        score = self.gamma.item() - score.sum(dim = 2)
+        return score
+
+    def pRotatE(self, head, relation, tail, mode):
+        pi = 3.14159262358979323846
+        
+        #Make phases of entities and relations uniformly distributed in [-pi, pi]
+
+        phase_head = head/(self.embedding_range.item()/pi)
+        phase_relation = relation/(self.embedding_range.item()/pi)
+        phase_tail = tail/(self.embedding_range.item()/pi)
+
+        if mode == 'head-batch':
+            score = phase_head + (phase_relation - phase_tail)
+        else:
+            score = (phase_head + phase_relation) - phase_tail
+
+        score = torch.sin(score)            
+        score = torch.abs(score)
+
+        score = self.gamma.item() - score.sum(dim = 2) * self.modulus
+        return score
+    
+    # https://github.com/thunlp/OpenKE/blob/OpenKE-PyTorch/openke/module/model/TransE.py
+    def TransE(self, head, relation, tail, mode):
+        if mode == 'head-batch':
+            score = head + (relation - tail)
+        else:
+            score = (head + relation) - tail
+
+        score = self.gamma.item() - torch.norm(score, p=1, dim=2)
+        return score
+    
+    # https://github.com/thunlp/OpenKE/blob/OpenKE-PyTorch/openke/module/model/TransD.py
+    def TransD(self, head, relation, tail, mode):
+        def _resize(tensor, axis, size):
+            shape = tensor.size()
+            osize = shape[axis]
+            if osize == size:
+                return tensor
+            if (osize > size):
+                return torch.narrow(tensor, axis, 0, size)
+            paddings = []
+            for i in range(len(shape)):
+                if i == axis:
+                    paddings = [0, size - osize] + paddings
+                else:
+                    paddings = [0, 0] + paddings
+            print (paddings)
+            return F.pad(tensor, paddings = paddings, mode = "constant", value = 0)
+        def _transfer(e, e_transfer, r_transfer):
+            if e.shape[0] != r_transfer.shape[0]:
+                e = e.view(-1, r_transfer.shape[0], e.shape[-1])
+                e_transfer = e_transfer.view(-1, r_transfer.shape[0], e_transfer.shape[-1])
+                r_transfer = r_transfer.view(-1, r_transfer.shape[0], r_transfer.shape[-1])
+                e = F.normalize(
+                    _resize(e, -1, r_transfer.size()[-1]) + torch.sum(e * e_transfer, -1, True) * r_transfer,
+                    p = 2, 
+                    dim = -1
+                )			
+                return e.view(-1, e.shape[-1])
+            else:
+                return F.normalize(
+                    _resize(e, -1, r_transfer.size()[-1]) + torch.sum(e * e_transfer, -1, True) * r_transfer,
+                    p = 2, 
+                    dim = -1
+                )
+        head = _transfer(head, self.h_transfer, self.r_transfer)
+        tail = _transfer(tail, self.t_transfer, self.r_transfer)
+        if mode == 'head_batch':
+            score = head + (relation - tail)
+        else:
+            score = (head + relation) - tail
+        return self.gamma.item() - torch.norm(score, p=1, dim=2)
+            
+    # https://github.com/thunlp/OpenKE/blob/OpenKE-PyTorch/openke/module/model/TransH.py
+    def TransH(self, head, relation, tail, mode):
+        def _transfer(e, norm):
+            norm = F.normalize(norm, p = 2, dim = -1)
+            return e - torch.sum(e * norm, -1, True) * norm
+        head = _transfer(head, self.relation_norm)
+        tail = _transfer(tail, self.relation_norm)
+        if mode == 'head_batch':
+            score = head + (relation - tail)
+        else:
+            score = (head + relation) - tail
+        return self.gamma.item() - torch.norm(score, p=1, dim=2)
+    
+    # https://github.com/thunlp/OpenKE/blob/OpenKE-PyTorch/openke/module/model/TransR.py
+    def TransR(self, head, relation, tail, mode):
+        def _transfer(e, r_transfer):
+            r_transfer = r_transfer.view(-1, self.entity_dim, self.relation_dim)
+            return torch.matmul(e, r_transfer)
+
+        head = _transfer(head, self.r_transfer)
+        tail = _transfer(tail, self.r_transfer)
+    
+        if mode == 'head_batch':
+            score = head + (relation - tail)
+        else:
+            score = (head + relation) - tail
+        return self.gamma.item() - torch.norm(score, p=1, dim=2)
+    
+
+
+
+    # https://github.com/thunlp/OpenKE/blob/OpenKE-PyTorch/openke/module/model/HolE.py
+    def HolE(self, head, relation, tail, mode):
+        def _conj(tensor):
+            zero_shape = (list)(tensor.shape)
+            one_shape = (list)(tensor.shape)
+            zero_shape[-1] = 1
+            one_shape[-1] -= 1
+            ze = torch.zeros(size = zero_shape, device = tensor.device)
+            on = torch.ones(size = one_shape, device = tensor.device)
+            matrix = torch.cat([ze, on], -1)
+            matrix = 2 * matrix
+            return tensor - matrix * tensor
+
+        def _mul(real_1, imag_1, real_2, imag_2):
+            real = real_1 * real_2 - imag_1 * imag_2
+            imag = real_1 * imag_2 + imag_1 * real_2
+            result = torch.complex(real, imag)
+            return result
+
+        def _ccorr(a, b):
+            a = _conj(torch.fft.fft(a, dim=-1))
+            b = torch.fft.fft(b, dim=-1)
+            res = _mul(a.real, a.imag, b.real, b.imag)
+            res = torch.fft.ifft(res, dim=-1).real
+            return res
+
+        score = _ccorr(head, tail) * relation
+        score = torch.sum(score, 2)
+        return score
 
 # class SparseAutoencoder(nn.Module):
 #     def __init__(self, input_dim, hidden_dim):
