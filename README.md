@@ -1,8 +1,8 @@
 # CKG-IMC: an inductive matrix completion method enhanced by CKG and GNN for Alzheimer’s disease compound-protein interactions prediction
+**Paper**: [:book:](https://www.sciencedirect.com/science/article/abs/pii/S0010482524006978)
 ## Introduction
 Alzheimer’s disease (AD) is a prevalent neurodegenerative disorder without effective therapeutic interventions. To address this challenge, we present CKG-IMC, a deep learning model for predicting compound-protein interactions (CPIs) relevant to AD. CKG-IMC integrates three modules: a Collaborative Knowledge Graph (CKG), a Principal Neighborhood Aggregation Graph Neural Network (PNA), and an Inductive Matrix Completion (IMC).
 ![](./src/fig.jpg)
-
 
 ## Environment Requirement
 The code has been tested running under Python 3.8 and 3.9.18. The required packages are as follows:
@@ -91,4 +91,14 @@ Here are the data explanation of files under `./data` folder.
    - *Description:* The relations.dict file serves as a mapping between relation names and their corresponding IDs. The first column represents the relation IDs, and the second column represents the corresponding relation name. The first column and the second column are separated by tabs.  
 ## Citation
 If you find this work useful, please consider citing our paper.
-
+```
+@article{yuan2024ckg,
+  title={CKG-IMC: An inductive matrix completion method enhanced by CKG and GNN for Alzheimer’s disease compound-protein interactions prediction},
+  author={Yuan, Yongna and Hu, Rizhen and Chen, Siming and Zhang, Xiaopeng and Liu, Zhenyu and Zhou, Gonghai},
+  journal={Computers in Biology and Medicine},
+  volume={177},
+  pages={108612},
+  year={2024},
+  publisher={Elsevier}
+}
+```
